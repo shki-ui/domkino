@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Кинотеатр Москва - Кемерово</title>
+    <style>
+        * { box-sizing: border-box; }
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background-color: #000; 
+            font-family: 'Courier New', Courier, monospace;
+            touch-action: none; 
+        }
+        
+        #viewport { width: 100%; height: 100%; position: relative; }
+        
+        #map-wrapper { 
+            position: absolute; transform-origin: 0 0; 
+            width: 2528px; height: 1684px; 
+            will-change: transform; 
+        }
+        
+        #bg-image { width: 100%; height: 100%; display: block; pointer-events: none; }
+
+        .marker { 
+            position: absolute; cursor: pointer; 
+            transform: translate(-50%, -100%); 
+        }
+        .marker img { width: 100%; display: block; pointer-events: none; }
+        
+        .marker-bubble {
+            position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+            margin-bottom: 15px; background: rgba(0,0,0,0.85); color: #fff; 
+            padding: 8px 12px; border-radius: 5px; border: 1px solid #fff; 
+            font-size: 14px; white-space: nowrap; pointer-events: none; 
+            opacity: 0; transition: opacity 0.3s, margin-bottom 0.3s; z-index: 100;
+        }
+        .marker-bubble.active { opacity: 1; margin-bottom: 25px; }
+
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .ui-element { pointer-events: auto; }
+        
+        #floor-switcher { position: absolute; top: 15px; right: 15px; display: flex; flex-direction: column; gap: 10px; }
+        #zoom-controls { position: absolute; bottom: 20px; right: 15px; display: flex; flex-direction: column; gap: 10px; }
+        
+        .btn { 
+            background: rgba(0, 0, 0, 0.7); color: white; border: 2px solid #fff; 
+            padding: 12px 15px; font-size: 16px; font-weight: bold; cursor: pointer; 
+            border-radius: 5px; transition: 0.2s; text-transform: uppercase; font-family: inherit;
+        }
+        .btn:hover { background: #555; }
+        .btn.active { background: #e74c3c; border-color: #e74c3c; }
+        .zoom-btn { font-size: 24px; padding: 10px 18px; line-height: 1; }
+
+        #coords-display { 
+            position: absolute; bottom: 20px; left: 20px; 
+            background: rgba(0, 0, 0, 0.8); color: #00ff00; 
+            padding: 10px; font-size: 16px; border-radius: 5px; 
+            pointer-events: none; display: none; border: 1px solid #00ff00; 
+        }
+    </style>
+</head>
+<body>
+
+    <div id="viewport">
+        <div id="map-wrapper">
+            <img id="bg-image" src="assets/bg_2.jpg" alt="Карта этажа">
+            <div id="markers-container"></div>
+        </div>
+
+        <div id="ui-layer">
+            <div id="floor-switcher" class="ui-element">
+                <button class="btn active" onclick="switchFloor(1)">1 Этаж</button>
+                <button class="btn" onclick="switchFloor(2)">2 Этаж</button>
+            </div>
+            
+            <div id="zoom-controls" class="ui-element">
+                <button class="btn zoom-btn" onclick="zoomInOut(0.2)">+</button>
+                <button class="btn zoom-btn" onclick="zoomInOut(-0.2)">-</button>
+            </div>
+
+            <div id="coords-display"></div>
+        </div>
+    </div>
+
+    <script>
+        const elementsData = [
+            { floor: 1, x: 1000, y: 800, image: 'assets/person1_f1.png', width: 60, text: "Где тут гардероб?" },
+            { floor: 1, x: 1500, y: 900, image: 'assets/kassa.png', width: 120, text: "Касса. Билетов нет." },
+            
+            { floor: 2, x: 1542, y: 630, image: 'assets/5.jpg', width: 60, text: "Первый спектакль, который тут был" }, 
+            { floor: 2, x: 1400, y: 600, image: 'assets/person2.png', width: 60, text: "Тсс! Спектакль уже начался." },
+            { floor: 2, x: 800, y: 1100, image: 'assets/proektor.png', width: 100, text: "Старый кинопроектор 1937 года." },
+            { floor: 2, x: 1000, y: 700, width: 80, text: "Здесь играли в шахматы.", 
+              frames: ['assets/pers/man_1.png', 'assets/pers/man_2.png', 'assets/pers/man_3.png', 'assets/pers/man_2.png'] }
+        ];
+
+        const viewport = document.getElementById('viewport');
+        const mapWrapper = document.getElementById('map-wrapper');
+        const bgImage = document.getElementById('bg-image');
+        const markersContainer = document.getElementById('markers-container');
+        
+        const mapWidth = 2528;
+        const mapHeight = 1684;
+        
+        let currentFloor = 1;
+        let animationIntervals = []; 
+
+        let scale = Math.max(window.innerWidth / mapWidth, window.innerHeight / mapHeight);
+        let posX = (window.innerWidth - mapWidth * scale) / 2;
+        let posY = (window.innerHeight - mapHeight * scale) / 2;
+
+        function updateMapTransform() {
+            // Границы дозволенного скроллинга
+            const minX = window.innerWidth - (mapWidth * scale);
+            const minY = window.innerHeight - (mapHeight * scale);
+
+            // Жестко ограничиваем координаты (0 - это верхний/левый край, minX/minY - нижний/правый)
+            posX = Math.min(0, Math.max(posX, minX));
+            posY = Math.min(0, Math.max(posY, minY));
+
+            mapWrapper.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`;
+        }
+
+        function switchFloor(floor) {
+            currentFloor = floor;
+            
+            document.querySelectorAll('#floor-switcher .btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`#floor-switcher .btn:nth-child(${floor})`).classList.add('active');
+            
+            bgImage.src = floor === 1 ? 'assets/bg_1.jpg' : 'assets/bg_2.jpg';
+            
+            renderMarkers();
+        }
+
+        function renderMarkers() {
+            markersContainer.innerHTML = '';
+            animationIntervals.forEach(clearInterval);
+            animationIntervals = [];
+
+            const currentElements = elementsData.filter(el => el.floor === currentFloor);
+
+            currentElements.forEach(data => {
+                const elDiv = document.createElement('div');
+                elDiv.className = 'marker ui-element'; 
+                elDiv.style.left = data.x + 'px';
+                elDiv.style.top = data.y + 'px';
+                elDiv.style.width = (data.width || 60) + 'px';
+
+                const img = document.createElement('img');
+                
+                if (data.frames) {
+                    img.src = data.frames[0];
+                    let frameIdx = 0;
+                    const interval = setInterval(() => {
+                        frameIdx = (frameIdx + 1) % data.frames.length;
+                        img.src = data.frames[frameIdx];
+                    }, 250); 
+                    animationIntervals.push(interval);
+                } else {
+                    img.src = data.image;
+                }
+                
+                const bubble = document.createElement('div');
+                bubble.className = 'marker-bubble';
+                bubble.innerText = data.text;
+
+                elDiv.appendChild(img);
+                elDiv.appendChild(bubble);
+                markersContainer.appendChild(elDiv);
+
+                elDiv.addEventListener('pointerdown', (e) => {
+                    e.stopPropagation(); 
+                    
+                    document.querySelectorAll('.marker-bubble.active').forEach(b => b.classList.remove('active'));
+                    bubble.classList.add('active');
+                    
+                    if (elDiv.hideTimeout) clearTimeout(elDiv.hideTimeout);
+                    elDiv.hideTimeout = setTimeout(() => {
+                        bubble.classList.remove('active');
+                    }, 3000);
+                });
+            });
+        }
+
+        let isDragging = false;
+        let startClientX, startClientY;
+        let startPosX, startPosY;
+        let dragDistance = 0;
+
+        viewport.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.ui-element')) return; 
+            isDragging = true;
+            dragDistance = 0;
+            startClientX = e.clientX;
+            startClientY = e.clientY;
+            startPosX = posX;
+            startPosY = posY;
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startClientX;
+            const dy = e.clientY - startClientY;
+            dragDistance += Math.abs(dx) + Math.abs(dy); 
+            
+            posX = startPosX + dx;
+            posY = startPosY + dy;
+            
+            updateMapTransform();
+            
+            // Сохраняем уже скорректированные границы, чтобы палец не "соскальзывал"
+            startClientX = e.clientX;
+            startClientY = e.clientY;
+            startPosX = posX;
+            startPosY = posY;
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+
+            if (dragDistance < 10 && !e.target.closest('.marker')) {
+                const rect = mapWrapper.getBoundingClientRect();
+                const clickX = Math.round((e.clientX - rect.left) / scale);
+                const clickY = Math.round((e.clientY - rect.top) / scale);
+                
+                const coordDisplay = document.getElementById('coords-display');
+                coordDisplay.innerText = `X: ${clickX}, Y: ${clickY}`;
+                coordDisplay.style.display = 'block';
+            }
+        });
+
+        function setZoom(newScale, originX = window.innerWidth / 2, originY = window.innerHeight / 2) {
+            // Динамический минимальный зум (чтобы экран всегда был заполнен картинкой)
+            const minScale = Math.max(window.innerWidth / mapWidth, window.innerHeight / mapHeight);
+            
+            // Жесткий максимальный зум (запрещаем приближать бесконечно)
+            const maxScale = 2.0;
+
+            const oldScale = scale;
+            scale = Math.max(minScale, Math.min(newScale, maxScale)); 
+
+            const mapX = (originX - posX) / oldScale;
+            const mapY = (originY - posY) / oldScale;
+
+            posX = originX - (mapX * scale);
+            posY = originY - (mapY * scale);
+
+            updateMapTransform();
+        }
+
+        function zoomInOut(amount) {
+            setZoom(scale + amount);
+        }
+
+        viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1; 
+            setZoom(scale * zoomDelta, e.clientX, e.clientY);
+        }, { passive: false });
+
+        let initialPinchDist = null;
+        let initialPinchScale = null;
+        let pinchCenterX, pinchCenterY;
+
+        viewport.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                isDragging = false;
+                initialPinchDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                initialPinchScale = scale;
+                pinchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                pinchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            }
+        }, { passive: false });
+
+        viewport.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2 && initialPinchDist) {
+                e.preventDefault(); 
+                const currentDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                const newScale = initialPinchScale * (currentDist / initialPinchDist);
+                setZoom(newScale, pinchCenterX, pinchCenterY);
+            }
+        }, { passive: false });
+
+        viewport.addEventListener('touchend', (e) => {
+            if (e.touches.length < 2) {
+                initialPinchDist = null;
+            }
+        });
+
+        // Пересчет границ при повороте телефона
+        window.addEventListener('resize', () => {
+            setZoom(scale); // setZoom сам пересчитает minScale и подгонит координаты
+        });
+
+        updateMapTransform();
+        switchFloor(1);
+    </script>
+</body>
+</html>
